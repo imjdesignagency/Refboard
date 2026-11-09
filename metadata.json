@@ -1,0 +1,6 @@
+{
+  "name": "REFBOARD - Artist Reference Workspace",
+  "description": "Professional digital reference workspace for concept artists, illustrators, and visual developers inspired by VizRef.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

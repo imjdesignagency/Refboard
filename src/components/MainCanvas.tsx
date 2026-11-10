@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import {
   DragState,
   HandleType,
@@ -9,7 +9,7 @@ import {
   ViewportTransform,
 } from '../types/canvas';
 import { CropBox } from '../models/board/Board';
-import { getImage, loadImage } from '../utils/imageLoader';
+import { getImage, loadImage, isImageFailed, getDisplayImage } from '../utils/imageLoader';
 import {
   clamp,
   getItemCenter,
@@ -22,6 +22,20 @@ import {
 } from '../utils/math';
 import { drawReferenceGrid } from '../utils/gridRenderer';
 import { Check, X, RotateCcw } from 'lucide-react';
+
+export interface MainCanvasHandle {
+  runCameraBenchmarkSweep: (
+    onFrameProgress: (instantFps: number, frameTimeMs: number, progress: number) => void
+  ) => Promise<{
+    avgFps: number;
+    onePercentLowFps: number;
+    totalFrames: number;
+    droppedFrames: number;
+    avgFrameTimeMs: number;
+    maxFrameTimeMs: number;
+    durationMs: number;
+  }>;
+}
 
 interface MainCanvasProps {
   items: ReferenceItem[];
@@ -41,24 +55,28 @@ interface MainCanvasProps {
   onCreateShape: (worldPt: Point) => void;
 }
 
-export const MainCanvas: React.FC<MainCanvasProps> = ({
-  items,
-  selectedIds,
-  toolMode,
-  transform,
-  cropItemId,
-  pencilColor,
-  pencilWidth,
-  onSelect,
-  onUpdateItems,
-  onUpdateTransform,
-  onApplyCrop,
-  onCancelCrop,
-  onPickColor,
-  onCreateText,
-  onCreateShape,
-}) => {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+export const MainCanvas = React.forwardRef<MainCanvasHandle, MainCanvasProps>(
+  function MainCanvas(
+    {
+      items,
+      selectedIds,
+      toolMode,
+      transform,
+      cropItemId,
+      pencilColor,
+      pencilWidth,
+      onSelect,
+      onUpdateItems,
+      onUpdateTransform,
+      onApplyCrop,
+      onCancelCrop,
+      onPickColor,
+      onCreateText,
+      onCreateShape,
+    },
+    ref
+  ) {
+    const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   // Active pointers map for multitouch (pinch-to-zoom & two-finger pan)
@@ -107,6 +125,14 @@ export const MainCanvas: React.FC<MainCanvasProps> = ({
   cropItemIdRef.current = cropItemId;
 
   const hasModifiedRef = useRef<boolean>(false);
+  const rafIdRef = useRef<number | null>(null);
+  const sortedItemsRef = useRef<ReferenceItem[]>([]);
+  const lastTransformChangeRef = useRef<number>(0);
+
+  // Maintain pre-sorted z-index cache to eliminate per-frame allocations
+  useEffect(() => {
+    sortedItemsRef.current = [...items].sort((a, b) => a.zIndex - b.zIndex);
+  }, [items]);
 
   // Initialize draft crop when cropItemId changes
   useEffect(() => {
@@ -167,36 +193,55 @@ export const MainCanvas: React.FC<MainCanvasProps> = ({
     ctx.fillStyle = '#141518';
     ctx.fillRect(0, 0, width, height);
 
-    // Draw subtle grid dots
+    // Draw subtle grid dots (batched into a single hardware GPU path operation)
     const gridSize = 48 * currentTf.scale;
-    if (gridSize >= 12) {
+    if (gridSize >= 14) {
       const offsetX = ((currentTf.x % gridSize) + gridSize) % gridSize;
       const offsetY = ((currentTf.y % gridSize) + gridSize) % gridSize;
 
       ctx.fillStyle = 'rgba(255, 255, 255, 0.055)';
-      const dotRadius = Math.max(1, Math.min(1.75, currentTf.scale * 1.2));
+      const dotRadius = Math.max(1, Math.min(1.5, currentTf.scale * 1.1));
+      ctx.beginPath();
       for (let x = offsetX; x < width; x += gridSize) {
         for (let y = offsetY; y < height; y += gridSize) {
-          ctx.beginPath();
+          ctx.moveTo(x + dotRadius, y);
           ctx.arc(x, y, dotRadius, 0, Math.PI * 2);
-          ctx.fill();
         }
       }
+      ctx.fill();
     }
 
-    // Sort items by zIndex for correct rendering order
-    const sorted = [...currentItems].sort((a, b) => a.zIndex - b.zIndex);
+    // Adaptive image smoothing: low/medium during active pan/zoom motion sweeps, high at rest
+    const isMoving =
+      dragStateRef.current !== null ||
+      performance.now() - lastTransformChangeRef.current < 120;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = isMoving ? 'low' : 'high';
 
-    // Draw visible items
+    // Use cached sorted array to eliminate per-frame allocations during 60 FPS motion
+    const sorted = sortedItemsRef.current.length > 0 ? sortedItemsRef.current : currentItems;
+
+    // Draw visible items with viewport frustum culling
     for (const item of sorted) {
       if (item.isVisible === false) continue;
 
-      ctx.save();
       const center = getItemCenter(item);
       const screenCenter = worldToScreen(center, currentTf);
       const screenW = item.width * currentTf.scale;
       const screenH = item.height * currentTf.scale;
 
+      // Viewport Frustum Culling: Skip items that are completely outside the visible canvas
+      const halfDiagonal = Math.hypot(screenW, screenH) / 2 + 20;
+      if (
+        screenCenter.x + halfDiagonal < 0 ||
+        screenCenter.x - halfDiagonal > width ||
+        screenCenter.y + halfDiagonal < 0 ||
+        screenCenter.y - halfDiagonal > height
+      ) {
+        continue;
+      }
+
+      ctx.save();
       ctx.translate(screenCenter.x, screenCenter.y);
       ctx.rotate(item.rotation);
       ctx.globalAlpha = item.opacity;
@@ -206,30 +251,36 @@ export const MainCanvas: React.FC<MainCanvasProps> = ({
           ctx.scale(item.isFlippedH ? -1 : 1, item.isFlippedV ? -1 : 1);
         }
 
-        const img = getImage(item.src);
+        const img = getDisplayImage(item.src, screenW);
         if (img) {
-          ctx.shadowColor = 'rgba(0, 0, 0, 0.45)';
-          ctx.shadowBlur = 18 * Math.min(currentTf.scale, 1.2);
-          ctx.shadowOffsetX = 0;
-          ctx.shadowOffsetY = 6 * Math.min(currentTf.scale, 1.2);
+          // Hardware-accelerated drop shadow (eliminates expensive Skia Gaussian blur passes)
+          const shadowOffset = Math.max(2, Math.min(8, 4 * currentTf.scale));
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
+          ctx.fillRect(-screenW / 2 + 1, -screenH / 2 + shadowOffset, screenW, screenH);
 
           // If item is being cropped right now, show full image with crop overlay
           if (activeCropId === item.id) {
             ctx.drawImage(img, -screenW / 2, -screenH / 2, screenW, screenH);
           } else if (item.crop) {
-            const sx = item.crop.x * img.naturalWidth;
-            const sy = item.crop.y * img.naturalHeight;
-            const sw = item.crop.width * img.naturalWidth;
-            const sh = item.crop.height * img.naturalHeight;
-            ctx.drawImage(img, sx, sy, sw, sh, -screenW / 2, -screenH / 2, screenW, screenH);
+            const fullImg = getImage(item.src) || img;
+            const nw = 'naturalWidth' in fullImg ? fullImg.naturalWidth : fullImg.width;
+            const nh = 'naturalHeight' in fullImg ? fullImg.naturalHeight : fullImg.height;
+            const sx = item.crop.x * nw;
+            const sy = item.crop.y * nh;
+            const sw = item.crop.width * nw;
+            const sh = item.crop.height * nh;
+            ctx.drawImage(fullImg, sx, sy, sw, sh, -screenW / 2, -screenH / 2, screenW, screenH);
           } else {
             ctx.drawImage(img, -screenW / 2, -screenH / 2, screenW, screenH);
           }
 
+          // Subtle hairline border for crisp reference separation
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+          ctx.lineWidth = 1;
+          ctx.strokeRect(-screenW / 2, -screenH / 2, screenW, screenH);
+
           // Draw reference grid overlay if enabled
           if (item.gridOverlay?.enabled) {
-            ctx.shadowColor = 'transparent';
-            ctx.shadowBlur = 0;
             drawReferenceGrid(
               ctx,
               item.gridOverlay,
@@ -241,7 +292,18 @@ export const MainCanvas: React.FC<MainCanvasProps> = ({
             );
           }
         } else {
-          loadImage(item.src).then(() => draw()).catch(() => {});
+          if (!isImageFailed(item.src)) {
+            loadImage(item.src)
+              .then(() => {
+                if (rafIdRef.current === null) {
+                  rafIdRef.current = requestAnimationFrame(() => {
+                    rafIdRef.current = null;
+                    draw();
+                  });
+                }
+              })
+              .catch(() => {});
+          }
           ctx.fillStyle = '#212328';
           ctx.strokeStyle = '#343842';
           ctx.lineWidth = 1;
@@ -251,7 +313,7 @@ export const MainCanvas: React.FC<MainCanvasProps> = ({
           ctx.font = '12px system-ui, sans-serif';
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
-          ctx.fillText(item.name || 'Loading...', 0, 0);
+          ctx.fillText(isImageFailed(item.src) ? 'Image Unavailable' : item.name || 'Loading...', 0, 0);
         }
       } else if (item.type === 'stroke' && item.points && item.points.length > 1) {
         // Draw vector spline in world space relative to center
@@ -511,6 +573,115 @@ export const MainCanvas: React.FC<MainCanvasProps> = ({
     ctx.restore();
   }, [draftCrop, pencilColor, pencilWidth]);
 
+  // RAF throttled render queue to prevent multiple redundant redraws per frame
+  const requestDraw = useCallback(() => {
+    if (rafIdRef.current !== null) return;
+    rafIdRef.current = requestAnimationFrame(() => {
+      rafIdRef.current = null;
+      draw();
+    });
+  }, [draw]);
+
+  // Expose imperative camera sweep benchmark runner for 60 FPS isolation
+  useImperativeHandle(ref, () => ({
+    runCameraBenchmarkSweep: async (onFrameProgress) => {
+      const initialTf = { ...transformRef.current };
+      const sweepDuration = 2500;
+      const startTime = performance.now();
+      const frameDeltas: number[] = [];
+      let lastTime = startTime;
+      let lastProgressUpdate = 0;
+
+      await new Promise<void>((resolve) => {
+        const animate = () => {
+          const now = performance.now();
+          const delta = now - lastTime;
+          lastTime = now;
+          frameDeltas.push(delta);
+
+          const elapsed = now - startTime;
+          const progress = Math.min(1, elapsed / sweepDuration);
+
+          // Update camera directly on ref without triggering React reconciliation on every frame
+          const angle = progress * Math.PI * 4;
+          const offsetX = Math.sin(angle) * 360;
+          const offsetY = Math.cos(angle * 0.5) * 200;
+          const scaleOscillation = initialTf.scale * (1 + 0.3 * Math.sin(progress * Math.PI * 2));
+
+          transformRef.current = {
+            x: initialTf.x + offsetX,
+            y: initialTf.y + offsetY,
+            scale: scaleOscillation,
+          };
+          lastTransformChangeRef.current = now;
+
+          // Render canvas directly in this exact RAF tick!
+          draw();
+
+          const instantFps = Math.min(120, Math.round(1000 / Math.max(1, delta)));
+
+          // Throttle progress update callback so React UI updates smoothly without bottlenecking the 60Hz canvas
+          if (now - lastProgressUpdate > 120 || progress >= 1) {
+            lastProgressUpdate = now;
+            onFrameProgress(instantFps, Math.round(delta), progress);
+          }
+
+          if (progress < 1) {
+            requestAnimationFrame(animate);
+          } else {
+            transformRef.current = initialTf;
+            draw();
+            resolve();
+          }
+        };
+
+        requestAnimationFrame(animate);
+      });
+
+      const totalSweepDuration = performance.now() - startTime;
+      const sortedDeltas = [...frameDeltas].sort((a, b) => a - b);
+      const p99Index = Math.min(
+        sortedDeltas.length - 1,
+        Math.floor(sortedDeltas.length * 0.99)
+      );
+      const p99Delta = sortedDeltas[p99Index] || 16.6;
+
+      const medianIndex = Math.floor(sortedDeltas.length / 2);
+      const medianDelta = sortedDeltas[medianIndex] || 16.6;
+      // Auto-detect display cadence: jank threshold is 1.5x median or 48ms minimum
+      const jankThreshold = Math.max(48, medianDelta * 1.5);
+      const droppedFrames = frameDeltas.filter((d) => d > jankThreshold).length;
+
+      const avgFps = Math.min(
+        120,
+        Math.round(frameDeltas.length / (totalSweepDuration / 1000))
+      );
+      const onePercentLowFps = Math.min(120, Math.round(1000 / Math.max(1, p99Delta)));
+      const avgFrameTimeMs = Number(
+        (frameDeltas.reduce((a, b) => a + b, 0) / Math.max(1, frameDeltas.length)).toFixed(1)
+      );
+      const maxFrameTimeMs = Number((Math.max(...frameDeltas, 0)).toFixed(1));
+
+      return {
+        avgFps,
+        onePercentLowFps,
+        totalFrames: frameDeltas.length,
+        droppedFrames,
+        avgFrameTimeMs,
+        maxFrameTimeMs,
+        durationMs: Math.round(totalSweepDuration),
+      };
+    },
+  }));
+
+  useEffect(() => {
+    return () => {
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current);
+      }
+    };
+  }, []);
+
   // Canvas resize and retina sync
   useEffect(() => {
     const handleResize = () => {
@@ -526,18 +697,26 @@ export const MainCanvas: React.FC<MainCanvasProps> = ({
       canvas.style.width = `${rect.width}px`;
       canvas.style.height = `${rect.height}px`;
 
-      draw();
+      requestDraw();
     };
 
     handleResize();
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
-  }, [draw]);
+  }, [requestDraw]);
 
-  // Redraw when state changes
+  // Redraw when state changes, recording motion timestamp for dynamic smoothing
   useEffect(() => {
-    draw();
-  }, [items, selectedIds, transform, cropItemId, draftCrop, marquee, draw]);
+    lastTransformChangeRef.current = performance.now();
+    requestDraw();
+
+    // Settle redraw to restore high-quality image smoothing once motion stops
+    const settleTimer = setTimeout(() => {
+      requestDraw();
+    }, 140);
+
+    return () => clearTimeout(settleTimer);
+  }, [items, selectedIds, transform, cropItemId, draftCrop, marquee, requestDraw]);
 
   // Pointer Down handler
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -1180,4 +1359,4 @@ export const MainCanvas: React.FC<MainCanvasProps> = ({
       )}
     </div>
   );
-};
+});

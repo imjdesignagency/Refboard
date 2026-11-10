@@ -8,6 +8,7 @@ import {
   Upload,
   Keyboard,
   Layers,
+  Activity,
 } from 'lucide-react';
 import { ViewportTransform } from '../types/canvas';
 
@@ -26,6 +27,7 @@ interface WorkspaceHeaderProps {
   onImportImages: (files: FileList) => void;
   onToggleShortcuts: () => void;
   onOpenExport: () => void;
+  onOpenSystemCheck?: () => void;
 }
 
 export const WorkspaceHeader: React.FC<WorkspaceHeaderProps> = ({
@@ -43,6 +45,7 @@ export const WorkspaceHeader: React.FC<WorkspaceHeaderProps> = ({
   onImportImages,
   onToggleShortcuts,
   onOpenExport,
+  onOpenSystemCheck,
 }) => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -159,6 +162,18 @@ export const WorkspaceHeader: React.FC<WorkspaceHeaderProps> = ({
           className="hidden"
           onChange={handleFileChange}
         />
+
+        {onOpenSystemCheck && (
+          <button
+            type="button"
+            onClick={onOpenSystemCheck}
+            title="Run Reference Board System Diagnostics & Stress Test"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600/15 hover:bg-blue-600/25 text-blue-300 hover:text-blue-200 border border-blue-500/30 text-xs font-medium transition-all whitespace-nowrap shadow-sm"
+          >
+            <Activity className="w-3.5 h-3.5 text-blue-400" />
+            <span className="hidden lg:inline">System Check</span>
+          </button>
+        )}
 
         <button
           type="button"

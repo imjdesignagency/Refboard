@@ -144,7 +144,7 @@ export const CanvasMinimap: React.FC<CanvasMinimapProps> = ({
   };
 
   return (
-    <div className="absolute bottom-5 right-5 z-20 flex flex-col items-end gap-1.5 select-none">
+    <div className="absolute bottom-5 left-5 z-20 flex flex-col items-start gap-1.5 select-none">
       {isExpanded && (
         <div className="p-1 rounded-xl bg-[#1c1d22]/90 border border-white/10 shadow-2xl backdrop-blur-md overflow-hidden">
           <canvas

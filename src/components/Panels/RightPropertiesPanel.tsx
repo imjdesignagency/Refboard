@@ -96,9 +96,9 @@ export const RightPropertiesPanel: React.FC<RightPropertiesPanelProps> = ({
   };
 
   return (
-    <div className="absolute top-18 right-4 z-20 w-72 rounded-2xl bg-[#1c1d22]/95 border border-white/10 shadow-2xl backdrop-blur-md text-slate-200 select-none overflow-hidden animate-in fade-in slide-in-from-right-4 duration-150">
-      {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 bg-[#15161a]">
+    <div className="absolute top-18 right-4 z-20 w-72 max-h-[calc(100vh-88px)] flex flex-col rounded-2xl bg-[#1c1d22]/95 border border-white/10 shadow-2xl backdrop-blur-md text-slate-200 select-none overflow-hidden animate-in fade-in slide-in-from-right-4 duration-150">
+      {/* Fixed Header */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 bg-[#15161a] shrink-0">
         <div className="flex items-center gap-2 min-w-0">
           <Sliders className="w-4 h-4 text-blue-400 shrink-0" />
           <h3 className="text-xs font-semibold text-white truncate">
@@ -114,7 +114,8 @@ export const RightPropertiesPanel: React.FC<RightPropertiesPanelProps> = ({
         </button>
       </div>
 
-      <div className="p-4 space-y-4 max-h-[calc(100vh-160px)] overflow-y-auto text-xs">
+      {/* Scrollable Settings Body */}
+      <div className="flex-1 p-4 space-y-4 overflow-y-auto text-xs min-h-0 scrollbar-thin scrollbar-thumb-white/10">
         {/* Transform / Coordinates (single item) */}
         {!isMulti && (
           <div className="space-y-2">
@@ -572,26 +573,26 @@ export const RightPropertiesPanel: React.FC<RightPropertiesPanelProps> = ({
             </button>
           )}
         </div>
+      </div>
 
-        {/* Duplicate & Delete Bottom Actions */}
-        <div className="grid grid-cols-2 gap-2 pt-2 border-t border-white/5">
-          <button
-            type="button"
-            onClick={onDuplicate}
-            className="py-2 px-3 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 border border-white/5 flex items-center justify-center gap-1.5 text-xs transition-colors"
-          >
-            <Copy className="w-3.5 h-3.5" />
-            <span>Duplicate</span>
-          </button>
-          <button
-            type="button"
-            onClick={onDelete}
-            className="py-2 px-3 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 flex items-center justify-center gap-1.5 text-xs transition-colors"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-            <span>Delete</span>
-          </button>
-        </div>
+      {/* Pinned Action Footer (Always visible, never clipped or obstructed) */}
+      <div className="p-3 border-t border-white/10 bg-[#15161a]/95 backdrop-blur-sm shrink-0 grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          onClick={onDuplicate}
+          className="py-2 px-3 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 border border-white/5 flex items-center justify-center gap-1.5 text-xs font-medium transition-colors"
+        >
+          <Copy className="w-3.5 h-3.5" />
+          <span>Duplicate</span>
+        </button>
+        <button
+          type="button"
+          onClick={onDelete}
+          className="py-2 px-3 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 flex items-center justify-center gap-1.5 text-xs font-medium transition-colors shadow-sm"
+        >
+          <Trash2 className="w-3.5 h-3.5" />
+          <span>Delete</span>
+        </button>
       </div>
     </div>
   );
